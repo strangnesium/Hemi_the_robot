@@ -1,0 +1,23 @@
+# Trading Bot Dependencies
+
+# Reddit API
+praw==7.7.1
+
+# Web Scraping
+beautifulsoup4==4.12.3
+requests==2.31.0
+lxml==5.1.0
+
+# Financial Data
+yfinance==0.2.36
+
+# Database
+supabase==2.3.4
+postgrest==0.16.0
+
+# Configuration
+python-dotenv==1.0.1
+
+# Utilities
+python-dateutil==2.8.2
+
