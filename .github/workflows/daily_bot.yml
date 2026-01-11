@@ -13,6 +13,12 @@ on:
         required: false
         default: '24'
 
+# Grant permissions for the workflow
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
 jobs:
   run-trading-bot:
     runs-on: ubuntu-latest
