@@ -2,6 +2,7 @@
 Discovery Module - Scrapes ApeWisdom and tracks Reddit mentions
 """
 import os
+import sys
 import re
 import time
 import logging
@@ -14,6 +15,13 @@ import prawcore
 from bs4 import BeautifulSoup
 import requests
 from supabase import create_client, Client
+
+# Import ticker-subreddit mappings
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+try:
+    from config import TICKER_SUBREDDITS
+except ImportError:
+    TICKER_SUBREDDITS = {}
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +54,10 @@ class DiscoveryEngine:
         
         # Target subreddits for mention tracking
         self.target_subreddits = ['wallstreetbets', 'stocks', 'investing', 'RobinHoodPennyStocks']
+        
+        # Ticker-to-subreddit mapping for subscriber tracking (loaded from config)
+        self.ticker_subreddits = TICKER_SUBREDDITS
+        logger.info(f"Loaded {len(self.ticker_subreddits)} ticker-subreddit mappings for subscriber tracking")
     
     def scrape_apewisdom(self, top_n: int = 50) -> List[Dict]:
         """
@@ -265,7 +277,8 @@ class DiscoveryEngine:
     def save_to_supabase(
         self, 
         apewisdom_data: List[Dict], 
-        reddit_data: Dict[str, Dict]
+        reddit_data: Dict[str, Dict],
+        subscriber_data: Dict[str, Dict] = None
     ) -> None:
         """
         Save discovered data to Supabase
@@ -273,7 +286,10 @@ class DiscoveryEngine:
         Args:
             apewisdom_data: List of ApeWisdom ticker data
             reddit_data: Dictionary of Reddit mention data
+            subscriber_data: Dictionary of subreddit subscriber data (optional)
         """
+        if subscriber_data is None:
+            subscriber_data = {}
         logger.info("Saving discovery data to Supabase...")
         
         # First, ensure all tickers exist in the tickers table
@@ -335,12 +351,32 @@ class DiscoveryEngine:
                 
                 # Aggregate subreddit distribution
                 for subreddit, count in data['subreddit_distribution'].items():
+                    # Add subscriber data if available
+                    top_posts_data = data['top_posts'].copy() if data['top_posts'] else []
+                    
+                    # If this ticker has subscriber data, add it to metadata
+                    if symbol in subscriber_data:
+                        sub_info = subscriber_data[symbol]
+                        if not isinstance(top_posts_data, list):
+                            top_posts_data = []
+                        # Store subscriber info in the first position or as metadata
+                        subscriber_metadata = {
+                            'subscriber_count': sub_info['subscriber_count'],
+                            'growth_7d_pct': sub_info['growth_7d_pct'],
+                            'subreddit_name': sub_info['subreddit_name']
+                        }
+                    else:
+                        subscriber_metadata = {}
+                    
                     self.supabase.table('reddit_mention_velocity').insert({
                         'ticker_id': ticker_id,
                         'subreddit': subreddit,
                         'mention_count_24h': count,
                         'velocity_change_pct': data['velocity_change_pct'],
-                        'top_posts': data['top_posts'],
+                        'top_posts': {
+                            'posts': top_posts_data,
+                            'subscriber_data': subscriber_metadata
+                        },
                         'timestamp': datetime.utcnow().isoformat()
                     }).execute()
                 
@@ -360,6 +396,93 @@ class DiscoveryEngine:
         
         logger.info("Discovery data saved successfully")
     
+    def track_subreddit_subscribers(self, ticker_subreddit_map: Dict[str, str]) -> Dict[str, Dict]:
+        """
+        Track subreddit subscriber counts for given tickers
+        
+        Args:
+            ticker_subreddit_map: Dictionary mapping ticker symbol -> subreddit name
+            
+        Returns:
+            Dictionary mapping ticker -> subscriber data
+        """
+        logger.info(f"Tracking subscriber counts for {len(ticker_subreddit_map)} subreddits...")
+        
+        subscriber_data = {}
+        
+        for ticker, subreddit_name in ticker_subreddit_map.items():
+            try:
+                subreddit = self.reddit.subreddit(subreddit_name)
+                subscriber_count = subreddit.subscribers
+                
+                # Get historical count for growth calculation
+                previous_count = self._get_previous_subscriber_count(ticker, days_back=7)
+                
+                if previous_count > 0:
+                    growth_pct = ((subscriber_count - previous_count) / previous_count) * 100
+                else:
+                    growth_pct = 0.0
+                
+                subscriber_data[ticker] = {
+                    'subreddit_name': subreddit_name,
+                    'subscriber_count': subscriber_count,
+                    'previous_count_7d': previous_count,
+                    'growth_7d_pct': round(growth_pct, 2)
+                }
+                
+                logger.info(f"  {ticker} (r/{subreddit_name}): {subscriber_count:,} subscribers ({growth_pct:+.2f}% 7d growth)")
+                
+                time.sleep(1.5)  # Rate limiting
+                
+            except Exception as e:
+                logger.warning(f"  Error tracking r/{subreddit_name} for {ticker}: {e}")
+        
+        return subscriber_data
+    
+    def _get_previous_subscriber_count(self, ticker: str, days_back: int = 7) -> int:
+        """
+        Get previous subscriber count for growth calculation
+        
+        Args:
+            ticker: Ticker symbol
+            days_back: Days to look back
+            
+        Returns:
+            Previous subscriber count
+        """
+        try:
+            # Get ticker_id
+            ticker_response = self.supabase.table('tickers').select('id').eq('symbol', ticker).execute()
+            
+            if not ticker_response.data:
+                return 0
+            
+            ticker_id = ticker_response.data[0]['id']
+            
+            # Get subscriber count from ~7 days ago
+            cutoff_time = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
+            
+            # Check if we have subreddit subscriber data in metadata
+            velocity_response = self.supabase.table('reddit_mention_velocity')\
+                .select('top_posts')\
+                .eq('ticker_id', ticker_id)\
+                .lte('timestamp', cutoff_time)\
+                .order('timestamp', desc=True)\
+                .limit(1)\
+                .execute()
+            
+            if velocity_response.data and velocity_response.data[0].get('top_posts'):
+                # Check if subscriber count is stored in metadata
+                metadata = velocity_response.data[0]['top_posts']
+                if isinstance(metadata, dict) and 'subscriber_count' in metadata:
+                    return metadata['subscriber_count']
+            
+            return 0
+            
+        except Exception as e:
+            logger.debug(f"Error getting previous subscriber count for {ticker}: {e}")
+            return 0
+    
     def run(self) -> Dict:
         """
         Main execution method - runs the full discovery pipeline
@@ -378,18 +501,32 @@ class DiscoveryEngine:
         top_symbols = [t['symbol'] for t in apewisdom_tickers[:20]]
         reddit_mentions = self.track_reddit_mentions(target_tickers=top_symbols, hours_back=24)
         
-        # Step 3: Save to Supabase
-        self.save_to_supabase(apewisdom_tickers, reddit_mentions)
+        # Step 3: Track subreddit subscribers (if mappings exist)
+        subscriber_data = {}
+        if self.ticker_subreddits:
+            # Only track tickers that are in our top symbols
+            relevant_mappings = {k: v for k, v in self.ticker_subreddits.items() if k in top_symbols}
+            if relevant_mappings:
+                subscriber_data = self.track_subreddit_subscribers(relevant_mappings)
+        
+        # Step 4: Save to Supabase
+        self.save_to_supabase(apewisdom_tickers, reddit_mentions, subscriber_data)
         
         results = {
             'apewisdom_count': len(apewisdom_tickers),
             'reddit_tracked_count': len(reddit_mentions),
+            'subscriber_tracked_count': len(subscriber_data),
             'top_trending': apewisdom_tickers[:5] if apewisdom_tickers else [],
             'highest_velocity': sorted(
                 reddit_mentions.items(), 
                 key=lambda x: x[1].get('velocity_change_pct', 0), 
                 reverse=True
-            )[:5]
+            )[:5],
+            'highest_subscriber_growth': sorted(
+                subscriber_data.items(),
+                key=lambda x: x[1].get('growth_7d_pct', 0),
+                reverse=True
+            )[:5] if subscriber_data else []
         }
         
         logger.info("=" * 60)

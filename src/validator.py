@@ -2,6 +2,7 @@
 Validator Module - Checks fundamental health of tickers using Yahoo Finance
 """
 import os
+import time
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -227,9 +228,17 @@ class FundamentalValidator:
         
         results = {}
         
-        for symbol in symbols:
+        for idx, symbol in enumerate(symbols):
+            # Add delay to avoid Yahoo Finance rate limiting (after every 5 tickers)
+            if idx > 0 and idx % 5 == 0:
+                logger.info(f"Rate limit pause: waiting 3 seconds...")
+                time.sleep(3)
+            
             # Fetch fundamentals
             fundamentals = self.fetch_fundamentals(symbol)
+            
+            # Small delay between each request
+            time.sleep(0.5)
             
             if fundamentals is None:
                 results[symbol] = {
