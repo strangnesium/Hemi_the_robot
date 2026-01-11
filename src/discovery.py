@@ -83,57 +83,74 @@ class DiscoveryEngine:
             soup = BeautifulSoup(response.content, 'html.parser')
             tickers = []
             
-            # Try multiple selector strategies (ApeWisdom may change their HTML)
-            # Strategy 1: Look for table rows
-            ticker_rows = soup.find_all('tr', class_='ticker-row')
+            # Find all links that point to stock pages: /stocks/SYMBOL/
+            stock_links = soup.find_all('a', href=re.compile(r'/stocks/[A-Z]+/?'))
             
-            # Strategy 2: Look for any links that might be tickers
-            if not ticker_rows:
-                ticker_rows = soup.find_all('tr')
-                logger.debug(f"Found {len(ticker_rows)} total table rows")
+            logger.debug(f"Found {len(stock_links)} stock links on ApeWisdom")
             
-            # Strategy 3: Look for ticker symbols in the page
-            if len(ticker_rows) < 10:
-                # Find all text that looks like stock tickers
-                all_text = soup.get_text()
-                logger.warning(f"ApeWisdom HTML structure may have changed. Found {len(ticker_rows)} rows.")
+            if len(stock_links) < 10:
+                logger.warning(f"ApeWisdom returned too few stock links ({len(stock_links)})")
                 logger.warning("Falling back to Reddit-only discovery mode")
                 return []
             
-            for idx, row in enumerate(ticker_rows[:top_n], 1):
+            # Parse each stock link and extract data from parent row
+            rank = 0
+            seen_symbols = set()
+            
+            for link in stock_links[:top_n * 2]:  # Get extra in case of duplicates
                 try:
-                    # Multiple selector attempts
-                    symbol_elem = (
-                        row.find('td', class_='ticker-symbol') or
-                        row.find('a', class_='ticker') or
-                        row.find('a', href=re.compile(r'/stock/')) or
-                        row.find('td')
-                    )
+                    # Extract symbol from URL like /stocks/ASTS/
+                    href = link.get('href', '')
+                    match = re.search(r'/stocks/([A-Z]+)/?', href)
+                    if not match:
+                        continue
                     
-                    mentions_elem = row.find('td', class_='mentions') or row.find_all('td')[1] if len(row.find_all('td')) > 1 else None
-                    upvotes_elem = row.find('td', class_='upvotes') or row.find_all('td')[2] if len(row.find_all('td')) > 2 else None
+                    symbol = match.group(1)
                     
-                    if symbol_elem:
-                        symbol = symbol_elem.text.strip().upper()
-                        # Remove $ prefix if present
-                        symbol = symbol.replace('$', '').replace(',', '')
+                    # Skip duplicates (same symbol may appear multiple times)
+                    if symbol in seen_symbols:
+                        continue
+                    seen_symbols.add(symbol)
+                    
+                    rank += 1
+                    if rank > top_n:
+                        break
+                    
+                    # Find the parent row (tr) containing this link
+                    parent_row = link.find_parent('tr')
+                    
+                    if parent_row:
+                        # Get all cells in the row
+                        cells = parent_row.find_all('td')
                         
-                        # Validate ticker symbol (1-5 uppercase letters)
-                        if not re.match(r'^[A-Z]{1,5}$', symbol):
-                            continue
+                        # Try to extract mentions and upvotes from the row
+                        # Based on HTML structure: | # | Name/Symbol | Mentions | 24h | Trend | Upvotes |
+                        mention_count = 0
+                        upvotes = 0
+                        
+                        # Look for numeric values in cells
+                        for cell in cells:
+                            text = cell.get_text(strip=True)
+                            # Try to parse as number
+                            num = self._parse_number(text)
+                            if num > 0:
+                                if mention_count == 0:
+                                    mention_count = num
+                                elif upvotes == 0 and num != mention_count:
+                                    upvotes = num
                         
                         ticker_data = {
-                            'rank': idx,
+                            'rank': rank,
                             'symbol': symbol,
-                            'mention_count': self._parse_number(mentions_elem.text) if mentions_elem else 0,
-                            'upvotes': self._parse_number(upvotes_elem.text) if upvotes_elem else 0,
+                            'mention_count': mention_count,
+                            'upvotes': upvotes,
                             'source': 'APEWISDOM'
                         }
                         tickers.append(ticker_data)
-                        logger.debug(f"Rank {idx}: {symbol} - {ticker_data['mention_count']} mentions")
+                        logger.debug(f"Rank {rank}: {symbol} - {mention_count} mentions, {upvotes} upvotes")
                 
                 except Exception as e:
-                    logger.debug(f"Error parsing ticker row {idx}: {e}")
+                    logger.debug(f"Error parsing stock link: {e}")
                     continue
             
             if tickers:
