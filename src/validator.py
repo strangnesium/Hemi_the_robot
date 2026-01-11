@@ -36,7 +36,7 @@ class FundamentalValidator:
         
         self.supabase: Client = create_client(supabase_url, supabase_key)
     
-    def fetch_fundamentals(self, symbol: str, max_retries: int = 3) -> Optional[Dict]:
+    def fetch_fundamentals(self, symbol: str, max_retries: int = 2) -> Optional[Dict]:
         """
         Fetch fundamental statistics for a ticker from Yahoo Finance
         
@@ -50,7 +50,7 @@ class FundamentalValidator:
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    wait_time = 5 * (2 ** attempt)  # Exponential backoff: 10s, 20s, 40s
+                    wait_time = 20 * (attempt + 1)  # Conservative backoff: 20s, 40s
                     logger.info(f"Retry {attempt}/{max_retries} for {symbol} after {wait_time}s...")
                     time.sleep(wait_time)
                 
@@ -250,14 +250,15 @@ class FundamentalValidator:
         results = {}
         
         for idx, symbol in enumerate(symbols):
-            # Add delay to avoid Yahoo Finance rate limiting
-            # More aggressive delays: 2 seconds between each + 10 seconds every 3 tickers
+            # Conservative rate limiting for 20-minute runtime
+            # 4 seconds between each ticker + 15 seconds every 5 tickers
             if idx > 0:
-                time.sleep(2)  # 2 seconds between each ticker
+                logger.debug(f"Rate limit pause: 4 seconds... ({idx}/{len(symbols)} completed)")
+                time.sleep(4)  # 4 seconds between each ticker
             
-            if idx > 0 and idx % 3 == 0:
-                logger.info(f"Rate limit pause: waiting 10 seconds... ({idx}/{len(symbols)} completed)")
-                time.sleep(10)
+            if idx > 0 and idx % 5 == 0:
+                logger.info(f"Extended rate limit pause: 15 seconds... ({idx}/{len(symbols)} completed)")
+                time.sleep(15)  # 15 seconds every 5 tickers
             
             # Fetch fundamentals
             fundamentals = self.fetch_fundamentals(symbol)
@@ -290,12 +291,13 @@ class FundamentalValidator:
         
         return results
     
-    def validate_from_supabase(self, hours_back: int = 24) -> Dict[str, Dict]:
+    def validate_from_supabase(self, hours_back: int = 24, max_tickers: int = 50) -> Dict[str, Dict]:
         """
         Validate tickers that have recent sentiment logs in Supabase
         
         Args:
             hours_back: How many hours back to look for tickers
+            max_tickers: Maximum number of tickers to validate (most mentioned first)
             
         Returns:
             Dictionary of validation results
@@ -305,7 +307,7 @@ class FundamentalValidator:
             cutoff_time = (datetime.utcnow() - timedelta(hours=hours_back)).isoformat()
             
             sentiment_response = self.supabase.table('sentiment_logs')\
-                .select('ticker_id, tickers(symbol)')\
+                .select('ticker_id, tickers(symbol), mention_count')\
                 .gte('timestamp', cutoff_time)\
                 .execute()
             
@@ -313,14 +315,24 @@ class FundamentalValidator:
                 logger.warning("No recent tickers found in sentiment logs")
                 return {}
             
-            # Extract unique symbols
-            symbols = list(set([
-                log['tickers']['symbol'] 
-                for log in sentiment_response.data 
-                if log.get('tickers')
-            ]))
+            # Count mentions per ticker
+            ticker_mentions = {}
+            for log in sentiment_response.data:
+                if log.get('tickers'):
+                    symbol = log['tickers']['symbol']
+                    mentions = log.get('mention_count', 0)
+                    ticker_mentions[symbol] = ticker_mentions.get(symbol, 0) + mentions
             
-            logger.info(f"Found {len(symbols)} unique tickers to validate from recent sentiment logs")
+            # Sort by mention count and take top N
+            sorted_tickers = sorted(
+                ticker_mentions.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:max_tickers]
+            
+            symbols = [ticker for ticker, _ in sorted_tickers]
+            
+            logger.info(f"Found {len(ticker_mentions)} unique tickers, validating top {len(symbols)} by mention count")
             
             return self.validate_tickers(symbols)
             
