@@ -58,41 +58,41 @@ class FundamentalValidator:
                 
                 ticker = yf.Ticker(symbol)
                 info = ticker.info
-            
-            # Extract key metrics
-            fundamentals = {
-                'symbol': symbol,
-                'company_name': info.get('longName', info.get('shortName')),
-                'industry': info.get('industry', info.get('sector')),
-                'market_cap': info.get('marketCap'),
-                'short_float_pct': info.get('shortPercentOfFloat', info.get('sharesShort')) or 0,
-                'debt_to_equity': info.get('debtToEquity'),
-                'revenue_growth': info.get('revenueGrowth'),
-                'profit_margin': info.get('profitMargins'),
-                'pe_ratio': info.get('trailingPE', info.get('forwardPE')),
-                'beta': info.get('beta'),
-                'current_price': info.get('currentPrice', info.get('regularMarketPrice')),
-                'fifty_two_week_high': info.get('fiftyTwoWeekHigh'),
-                'fifty_two_week_low': info.get('fiftyTwoWeekLow'),
-                'volume': info.get('volume'),
-                'avg_volume': info.get('averageVolume'),
-                'raw_data': info  # Store complete response
-            }
-            
-            # Convert percentage values
-            if fundamentals['short_float_pct']:
-                # Convert to percentage if it's a decimal
-                if fundamentals['short_float_pct'] < 1:
-                    fundamentals['short_float_pct'] *= 100
-            
-            if fundamentals['revenue_growth']:
-                if fundamentals['revenue_growth'] < 1:
-                    fundamentals['revenue_growth'] *= 100
-            
-            if fundamentals['profit_margin']:
-                if fundamentals['profit_margin'] < 1 and fundamentals['profit_margin'] > -1:
-                    fundamentals['profit_margin'] *= 100
-            
+                
+                # Extract key metrics
+                fundamentals = {
+                    'symbol': symbol,
+                    'company_name': info.get('longName', info.get('shortName')),
+                    'industry': info.get('industry', info.get('sector')),
+                    'market_cap': info.get('marketCap'),
+                    'short_float_pct': info.get('shortPercentOfFloat', info.get('sharesShort')) or 0,
+                    'debt_to_equity': info.get('debtToEquity'),
+                    'revenue_growth': info.get('revenueGrowth'),
+                    'profit_margin': info.get('profitMargins'),
+                    'pe_ratio': info.get('trailingPE', info.get('forwardPE')),
+                    'beta': info.get('beta'),
+                    'current_price': info.get('currentPrice', info.get('regularMarketPrice')),
+                    'fifty_two_week_high': info.get('fiftyTwoWeekHigh'),
+                    'fifty_two_week_low': info.get('fiftyTwoWeekLow'),
+                    'volume': info.get('volume'),
+                    'avg_volume': info.get('averageVolume'),
+                    'raw_data': info  # Store complete response
+                }
+                
+                # Convert percentage values
+                if fundamentals['short_float_pct']:
+                    # Convert to percentage if it's a decimal
+                    if fundamentals['short_float_pct'] < 1:
+                        fundamentals['short_float_pct'] *= 100
+                
+                if fundamentals['revenue_growth']:
+                    if fundamentals['revenue_growth'] < 1:
+                        fundamentals['revenue_growth'] *= 100
+                
+                if fundamentals['profit_margin']:
+                    if fundamentals['profit_margin'] < 1 and fundamentals['profit_margin'] > -1:
+                        fundamentals['profit_margin'] *= 100
+                
                 logger.info(f"✓ Successfully fetched fundamentals for {symbol}")
                 logger.debug(f"  Market Cap: ${fundamentals['market_cap']:,}" if fundamentals['market_cap'] else "  Market Cap: N/A")
                 logger.debug(f"  P/E Ratio: {fundamentals['pe_ratio']:.2f}" if fundamentals['pe_ratio'] else "  P/E Ratio: N/A")
