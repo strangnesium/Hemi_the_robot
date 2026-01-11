@@ -36,21 +36,28 @@ class FundamentalValidator:
         
         self.supabase: Client = create_client(supabase_url, supabase_key)
     
-    def fetch_fundamentals(self, symbol: str) -> Optional[Dict]:
+    def fetch_fundamentals(self, symbol: str, max_retries: int = 3) -> Optional[Dict]:
         """
         Fetch fundamental statistics for a ticker from Yahoo Finance
         
         Args:
             symbol: Stock ticker symbol
+            max_retries: Maximum number of retry attempts on rate limit
             
         Returns:
             Dictionary of fundamental data or None if failed
         """
-        try:
-            logger.info(f"Fetching fundamentals for {symbol}...")
-            
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = 5 * (2 ** attempt)  # Exponential backoff: 10s, 20s, 40s
+                    logger.info(f"Retry {attempt}/{max_retries} for {symbol} after {wait_time}s...")
+                    time.sleep(wait_time)
+                
+                logger.info(f"Fetching fundamentals for {symbol}...")
+                
+                ticker = yf.Ticker(symbol)
+                info = ticker.info
             
             # Extract key metrics
             fundamentals = {
@@ -86,15 +93,29 @@ class FundamentalValidator:
                 if fundamentals['profit_margin'] < 1 and fundamentals['profit_margin'] > -1:
                     fundamentals['profit_margin'] *= 100
             
-            logger.info(f"✓ Successfully fetched fundamentals for {symbol}")
-            logger.debug(f"  Market Cap: ${fundamentals['market_cap']:,}" if fundamentals['market_cap'] else "  Market Cap: N/A")
-            logger.debug(f"  P/E Ratio: {fundamentals['pe_ratio']:.2f}" if fundamentals['pe_ratio'] else "  P/E Ratio: N/A")
-            
-            return fundamentals
-            
-        except Exception as e:
-            logger.error(f"✗ Failed to fetch fundamentals for {symbol}: {e}")
-            return None
+                logger.info(f"✓ Successfully fetched fundamentals for {symbol}")
+                logger.debug(f"  Market Cap: ${fundamentals['market_cap']:,}" if fundamentals['market_cap'] else "  Market Cap: N/A")
+                logger.debug(f"  P/E Ratio: {fundamentals['pe_ratio']:.2f}" if fundamentals['pe_ratio'] else "  P/E Ratio: N/A")
+                
+                return fundamentals
+                
+            except Exception as e:
+                error_msg = str(e)
+                # Check if it's a rate limit error (429)
+                if '429' in error_msg or 'Too Many Requests' in error_msg:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⚠ Rate limit hit for {symbol}, will retry...")
+                        continue
+                    else:
+                        logger.error(f"✗ Rate limit exceeded for {symbol} after {max_retries} attempts")
+                        return None
+                else:
+                    logger.error(f"✗ Failed to fetch fundamentals for {symbol}: {e}")
+                    return None
+        
+        # If we exhausted all retries
+        logger.error(f"✗ Failed to fetch fundamentals for {symbol} after {max_retries} attempts")
+        return None
     
     def check_health(self, fundamentals: Dict) -> Tuple[bool, List[str], float]:
         """
@@ -229,16 +250,17 @@ class FundamentalValidator:
         results = {}
         
         for idx, symbol in enumerate(symbols):
-            # Add delay to avoid Yahoo Finance rate limiting (after every 5 tickers)
-            if idx > 0 and idx % 5 == 0:
-                logger.info(f"Rate limit pause: waiting 3 seconds...")
-                time.sleep(3)
+            # Add delay to avoid Yahoo Finance rate limiting
+            # More aggressive delays: 2 seconds between each + 10 seconds every 3 tickers
+            if idx > 0:
+                time.sleep(2)  # 2 seconds between each ticker
+            
+            if idx > 0 and idx % 3 == 0:
+                logger.info(f"Rate limit pause: waiting 10 seconds... ({idx}/{len(symbols)} completed)")
+                time.sleep(10)
             
             # Fetch fundamentals
             fundamentals = self.fetch_fundamentals(symbol)
-            
-            # Small delay between each request
-            time.sleep(0.5)
             
             if fundamentals is None:
                 results[symbol] = {

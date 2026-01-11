@@ -73,7 +73,7 @@ class DiscoveryEngine:
         
         url = "https://apewisdom.io/"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
         try:
@@ -83,42 +83,84 @@ class DiscoveryEngine:
             soup = BeautifulSoup(response.content, 'html.parser')
             tickers = []
             
-            # Parse the trending table (adjust selectors based on actual HTML structure)
-            # This is a placeholder - you'll need to inspect ApeWisdom's actual HTML
-            ticker_rows = soup.find_all('tr', class_='ticker-row')[:top_n]
+            # Try multiple selector strategies (ApeWisdom may change their HTML)
+            # Strategy 1: Look for table rows
+            ticker_rows = soup.find_all('tr', class_='ticker-row')
             
-            for idx, row in enumerate(ticker_rows, 1):
+            # Strategy 2: Look for any links that might be tickers
+            if not ticker_rows:
+                ticker_rows = soup.find_all('tr')
+                logger.debug(f"Found {len(ticker_rows)} total table rows")
+            
+            # Strategy 3: Look for ticker symbols in the page
+            if len(ticker_rows) < 10:
+                # Find all text that looks like stock tickers
+                all_text = soup.get_text()
+                logger.warning(f"ApeWisdom HTML structure may have changed. Found {len(ticker_rows)} rows.")
+                logger.warning("Falling back to Reddit-only discovery mode")
+                return []
+            
+            for idx, row in enumerate(ticker_rows[:top_n], 1):
                 try:
-                    # Adjust these selectors based on actual HTML structure
-                    symbol_elem = row.find('td', class_='ticker-symbol') or row.find('a', class_='ticker')
-                    mentions_elem = row.find('td', class_='mentions')
-                    upvotes_elem = row.find('td', class_='upvotes')
+                    # Multiple selector attempts
+                    symbol_elem = (
+                        row.find('td', class_='ticker-symbol') or
+                        row.find('a', class_='ticker') or
+                        row.find('a', href=re.compile(r'/stock/')) or
+                        row.find('td')
+                    )
+                    
+                    mentions_elem = row.find('td', class_='mentions') or row.find_all('td')[1] if len(row.find_all('td')) > 1 else None
+                    upvotes_elem = row.find('td', class_='upvotes') or row.find_all('td')[2] if len(row.find_all('td')) > 2 else None
                     
                     if symbol_elem:
                         symbol = symbol_elem.text.strip().upper()
                         # Remove $ prefix if present
-                        symbol = symbol.replace('$', '')
+                        symbol = symbol.replace('$', '').replace(',', '')
+                        
+                        # Validate ticker symbol (1-5 uppercase letters)
+                        if not re.match(r'^[A-Z]{1,5}$', symbol):
+                            continue
                         
                         ticker_data = {
                             'rank': idx,
                             'symbol': symbol,
-                            'mention_count': int(mentions_elem.text.strip()) if mentions_elem else 0,
-                            'upvotes': int(upvotes_elem.text.strip()) if upvotes_elem else 0,
+                            'mention_count': self._parse_number(mentions_elem.text) if mentions_elem else 0,
+                            'upvotes': self._parse_number(upvotes_elem.text) if upvotes_elem else 0,
                             'source': 'APEWISDOM'
                         }
                         tickers.append(ticker_data)
-                        logger.info(f"Rank {idx}: {symbol} - {ticker_data['mention_count']} mentions")
+                        logger.debug(f"Rank {idx}: {symbol} - {ticker_data['mention_count']} mentions")
                 
                 except Exception as e:
-                    logger.warning(f"Error parsing ticker row {idx}: {e}")
+                    logger.debug(f"Error parsing ticker row {idx}: {e}")
                     continue
             
-            logger.info(f"Successfully scraped {len(tickers)} tickers from ApeWisdom")
+            if tickers:
+                logger.info(f"✓ Successfully scraped {len(tickers)} tickers from ApeWisdom")
+            else:
+                logger.warning(f"⚠ ApeWisdom scraping returned 0 tickers (site structure may have changed)")
+                logger.warning("⚠ Continuing with Reddit-only discovery mode")
+            
             return tickers
             
         except requests.RequestException as e:
-            logger.error(f"Failed to scrape ApeWisdom: {e}")
+            logger.warning(f"⚠ Failed to connect to ApeWisdom: {e}")
+            logger.warning("⚠ Continuing with Reddit-only discovery mode")
             return []
+    
+    def _parse_number(self, text: str) -> int:
+        """Parse number from text, handling commas and K/M suffixes"""
+        try:
+            text = text.strip().replace(',', '')
+            if 'K' in text.upper():
+                return int(float(text.upper().replace('K', '')) * 1000)
+            elif 'M' in text.upper():
+                return int(float(text.upper().replace('M', '')) * 1000000)
+            else:
+                return int(text)
+        except:
+            return 0
     
     def extract_ticker_from_text(self, text: str) -> List[str]:
         """
@@ -497,9 +539,27 @@ class DiscoveryEngine:
         # Step 1: Scrape ApeWisdom
         apewisdom_tickers = self.scrape_apewisdom(top_n=50)
         
-        # Step 2: Track Reddit mentions for top 20 ApeWisdom tickers
-        top_symbols = [t['symbol'] for t in apewisdom_tickers[:20]]
-        reddit_mentions = self.track_reddit_mentions(target_tickers=top_symbols, hours_back=24)
+        # Step 2: Track Reddit mentions
+        if apewisdom_tickers:
+            # Track mentions for top 20 ApeWisdom tickers
+            top_symbols = [t['symbol'] for t in apewisdom_tickers[:20]]
+            logger.info(f"Tracking Reddit mentions for top {len(top_symbols)} ApeWisdom tickers")
+            reddit_mentions = self.track_reddit_mentions(target_tickers=top_symbols, hours_back=24)
+        else:
+            # ApeWisdom failed, discover tickers from Reddit mentions directly
+            logger.warning("⚠ ApeWisdom returned no data - discovering tickers from Reddit mentions")
+            reddit_mentions = self.track_reddit_mentions(target_tickers=None, hours_back=24)
+            
+            # Get top mentioned tickers from Reddit
+            if reddit_mentions:
+                top_symbols = sorted(
+                    reddit_mentions.keys(),
+                    key=lambda x: reddit_mentions[x]['mention_count_24h'],
+                    reverse=True
+                )[:20]
+                logger.info(f"Discovered {len(top_symbols)} tickers from Reddit mentions")
+            else:
+                top_symbols = []
         
         # Step 3: Track subreddit subscribers (if mappings exist)
         subscriber_data = {}
