@@ -12,7 +12,7 @@ lxml==5.1.0
 yfinance==0.2.36
 
 # Database
-supabase==2.3.4
+supabase==2.9.0
 # postgrest installed automatically as supabase dependency
 
 # Configuration
