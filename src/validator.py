@@ -50,8 +50,8 @@ class FundamentalValidator:
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    wait_time = 20 * (attempt + 1)  # Conservative backoff: 20s, 40s
-                    logger.info(f"Retry {attempt}/{max_retries} for {symbol} after {wait_time}s...")
+                    wait_time = 60 * attempt  # Very conservative backoff: 60s, 120s
+                    logger.info(f"⚠️  Retry {attempt}/{max_retries} for {symbol} after {wait_time}s cooldown...")
                     time.sleep(wait_time)
                 
                 logger.info(f"Fetching fundamentals for {symbol}...")
@@ -247,18 +247,23 @@ class FundamentalValidator:
         logger.info(f"Validating {len(symbols)} tickers...")
         logger.info("=" * 60)
         
+        # Initial cooldown to clear any existing rate limits
+        logger.info("⏸️  Initial cooldown: waiting 60 seconds to clear rate limits...")
+        time.sleep(60)
+        logger.info("✓ Cooldown complete, starting validation")
+        
         results = {}
         
         for idx, symbol in enumerate(symbols):
-            # Conservative rate limiting for 20-minute runtime
-            # 4 seconds between each ticker + 15 seconds every 5 tickers
+            # Ultra-conservative rate limiting for 20-minute runtime
+            # 8 seconds between each ticker + 30 seconds every 5 tickers
             if idx > 0:
-                logger.debug(f"Rate limit pause: 4 seconds... ({idx}/{len(symbols)} completed)")
-                time.sleep(4)  # 4 seconds between each ticker
+                logger.debug(f"Rate limit pause: 8 seconds... ({idx}/{len(symbols)} completed)")
+                time.sleep(8)  # 8 seconds between each ticker
             
             if idx > 0 and idx % 5 == 0:
-                logger.info(f"Extended rate limit pause: 15 seconds... ({idx}/{len(symbols)} completed)")
-                time.sleep(15)  # 15 seconds every 5 tickers
+                logger.info(f"Extended rate limit pause: 30 seconds... ({idx}/{len(symbols)} completed)")
+                time.sleep(30)  # 30 seconds every 5 tickers
             
             # Fetch fundamentals
             fundamentals = self.fetch_fundamentals(symbol)

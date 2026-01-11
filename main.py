@@ -110,9 +110,10 @@ class TradingBotOrchestrator:
             logger.info("PHASE 2: VALIDATION - Checking Fundamental Health")
             logger.info("═" * 80)
             
-            # Validate top 50 most mentioned tickers from the last 24 hours
-            # This keeps runtime ~15-20 minutes with conservative rate limiting
-            validation_results = self.validator.validate_from_supabase(hours_back=24, max_tickers=50)
+            # Validate top 30 most mentioned tickers from the last 24 hours
+            # Ultra-conservative to avoid Yahoo Finance rate limits
+            # Runtime: ~18-22 minutes with 60s cooldown + 8s per ticker + 30s every 5
+            validation_results = self.validator.validate_from_supabase(hours_back=24, max_tickers=30)
             results['validation'] = {
                 'total_validated': len(validation_results),
                 'passed': sum(1 for r in validation_results.values() if r['valid']),
