@@ -13,7 +13,7 @@ yfinance==0.2.36
 
 # Database
 supabase==2.3.4
-postgrest==0.16.0
+# postgrest installed automatically as supabase dependency
 
 # Configuration
 python-dotenv==1.0.1
